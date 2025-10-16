@@ -23,7 +23,7 @@ import Board from './components/Board';
 import Scoreboard from './components/Scoreboard';
 import { checkWinner, isDraw, getNextPlayer, applyMove } from './lib/gameLogic';
 import { createAuditLogger } from './lib/audit';
-import { validateIndex, canUserPlay, validateSettings } from './lib/validation';
+import { validateIndex, canUserPlay, validateSettings, validateTimerConfig, validateLocalPersistenceToggle } from './lib/validation';
 import { computeAiMove } from './lib/ai';
 import { createTimer } from './lib/timer';
 import { getSessionId, loadScores, saveScores, clearScores, loadSettings, saveSettings } from './lib/storage';
@@ -35,6 +35,7 @@ function useAudit(sessionId) {
       createAuditLogger({
         persist: false,
         getUserId: () => `session:${sessionId}`,
+        getSessionId: () => sessionId,
       }),
     [sessionId]
   );
@@ -99,14 +100,37 @@ function App() {
   const [liveMsg, setLiveMsg] = useState('');
 
   useEffect(() => {
-    audit.setPersistence(persistAudit);
+    try {
+      audit.setPersistence(persistAudit);
+      audit.log({
+        action: 'UPDATE',
+        eventType: 'SETTINGS_CHANGE',
+        beforeState: { persistAudit: !persistAudit },
+        afterState: { persistAudit },
+        details: 'Audit persistence toggled'
+      });
+    } catch {
+      // noop
+    }
   }, [persistAudit, audit]);
 
   // Persist selected settings for continuity
   useEffect(() => {
     const settings = { mode, difficulty, aiSymbol, starting, turnDuration, timeoutBehavior, persistScores };
-    saveSettings(settings);
-  }, [mode, difficulty, aiSymbol, starting, turnDuration, timeoutBehavior, persistScores]);
+    try {
+      saveSettings(settings);
+    } catch (err) {
+      setStatusMsg('Could not save settings');
+      setStatusType('error');
+      audit.log({
+        action: 'UPDATE',
+        eventType: 'settings_save_error',
+        beforeState: {},
+        afterState: settings,
+        details: err?.message || 'saveSettings failed'
+      });
+    }
+  }, [mode, difficulty, aiSymbol, starting, turnDuration, timeoutBehavior, persistScores, audit]);
 
   const gameOver = (() => {
     const w = checkWinner(board);
@@ -119,25 +143,50 @@ function App() {
   // Persist scores based on toggle
   useEffect(() => {
     if (persistScores) {
-      saveScores(score);
+      try {
+        saveScores(score);
+      } catch (err) {
+        setStatusMsg('Failed to save scores');
+        setStatusType('error');
+        audit.log({
+          action: 'UPDATE',
+          eventType: 'score_persist_error',
+          beforeState: {},
+          afterState: score,
+          details: err?.message || 'saveScores failed'
+        });
+      }
     }
-  }, [score, persistScores]);
+  }, [score, persistScores, audit]);
 
   // On toggle change, if disabled, clear persisted scores
   useEffect(() => {
-    if (!persistScores) {
-      clearScores();
-    } else {
-      // when enabling, immediately save current in-memory score
-      saveScores(score);
+    const before = { persistScores: !persistScores };
+    try {
+      const normalized = validateLocalPersistenceToggle(persistScores);
+      if (!normalized) {
+        clearScores();
+      } else {
+        saveScores(score);
+      }
+      audit.log({
+        action: 'UPDATE',
+        eventType: 'SETTINGS_CHANGE',
+        beforeState: before,
+        afterState: { persistScores: normalized },
+        details: 'Persist scores toggle changed',
+      });
+    } catch (err) {
+      setStatusMsg(err?.message || 'Invalid persistence toggle');
+      setStatusType('error');
+      audit.log({
+        action: 'UPDATE',
+        eventType: 'settings_change_error',
+        beforeState: before,
+        afterState: { persistScores },
+        details: err?.message || 'toggle validation failed',
+      });
     }
-    audit.log({
-      action: 'UPDATE',
-      eventType: 'settings_change',
-      beforeState: { setting: 'persistScores' },
-      afterState: { persistScores },
-      details: 'Persist scores toggle changed',
-    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persistScores]);
 
@@ -148,26 +197,31 @@ function App() {
       tickIntervalMs: 250,
       onTick: (ms) => {
         setRemainingMs(ms);
-        // Audit TIMER_TICK as GAME_EVENT, keep frequency manageable (every 1s)
-        // We log on each onTick; consumers can throttle if needed. Keep small payload.
-        audit.log({
-          action: 'READ',
-          eventType: 'TIMER_TICK',
-          beforeState: { remainingMs: ms + 250 }, // approximate previous
-          afterState: { remainingMs: ms },
-          details: `Next: ${nextPlayer}`
-        });
+        // Read-only TIMER_TICK with before/after snapshot
+        try {
+          audit.log({
+            action: 'READ',
+            eventType: 'TIMER_TICK',
+            beforeState: { remainingMs: Math.min(ms + 250, totalDurationRef.current) },
+            afterState: { remainingMs: ms },
+            details: `Next: ${nextPlayer}`
+          });
+        } catch {
+          // avoid noisy failures
+        }
       },
       onTimeout: () => {
         // TIMEOUT handling based on configured behavior
         const before = board.slice();
-        audit.log({
-          action: 'UPDATE',
-          eventType: 'TIMEOUT',
-          beforeState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
-          afterState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
-          details: 'Turn timer elapsed'
-        });
+        try {
+          audit.log({
+            action: 'UPDATE',
+            eventType: 'TIMEOUT',
+            beforeState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+            afterState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+            details: 'Turn timer elapsed'
+          });
+        } catch {}
         handleTimeoutAction();
       }
     });
@@ -176,13 +230,21 @@ function App() {
   function startTurnTimer() {
     totalDurationRef.current = turnDuration;
     try {
+      validateTimerConfig({ durationMs: turnDuration, behavior: timeoutBehavior });
       timerRef.current.start(turnDuration);
       setRemainingMs(turnDuration);
       setLiveMsg(`Timer started: ${Math.ceil(turnDuration / 1000)} seconds`);
     } catch (e) {
       // Shouldn't happen with validated durations, but avoid crashing
-      setStatusMsg('Timer error');
+      setStatusMsg(e?.message || 'Timer error');
       setStatusType('error');
+      audit.log({
+        action: 'UPDATE',
+        eventType: 'timer_start_error',
+        beforeState: { durationMs: turnDuration },
+        afterState: {},
+        details: e?.message || 'timer start failed'
+      });
     }
   }
 
@@ -692,20 +754,33 @@ function App() {
               onChange={(e) => {
                 const dur = parseInt(e.target.value, 10);
                 const before = turnDuration;
-                setTurnDuration(dur);
-                totalDurationRef.current = dur;
-                // Restart timer with new duration if game not over
-                const { winner } = checkWinner(board);
-                if (!winner && !isDraw(board)) {
-                  resetTurnTimer();
+                try {
+                  validateTimerConfig({ durationMs: dur, behavior: timeoutBehavior });
+                  setTurnDuration(dur);
+                  totalDurationRef.current = dur;
+                  // Restart timer with new duration if game not over
+                  const { winner } = checkWinner(board);
+                  if (!winner && !isDraw(board)) {
+                    resetTurnTimer();
+                  }
+                  audit.log({
+                    action: 'UPDATE',
+                    eventType: 'SETTINGS_CHANGE',
+                    beforeState: { turnDuration: before },
+                    afterState: { turnDuration: dur },
+                    details: 'Timer duration change'
+                  });
+                } catch (err) {
+                  setStatusMsg(err?.message || 'Invalid timer setting');
+                  setStatusType('error');
+                  audit.log({
+                    action: 'UPDATE',
+                    eventType: 'settings_change_error',
+                    beforeState: { turnDuration: before },
+                    afterState: { turnDuration: dur },
+                    details: err?.message || 'timer validation failed'
+                  });
                 }
-                audit.log({
-                  action: 'UPDATE',
-                  eventType: 'settings_change',
-                  beforeState: { turnDuration: before },
-                  afterState: { turnDuration: dur },
-                  details: 'Timer duration change'
-                });
               }}
               className="btn ghost"
               data-testid="timer-duration-select"
@@ -722,14 +797,27 @@ function App() {
               onChange={(e) => {
                 const before = timeoutBehavior;
                 const next = e.target.value;
-                setTimeoutBehavior(next);
-                audit.log({
-                  action: 'UPDATE',
-                  eventType: 'settings_change',
-                  beforeState: { timeoutBehavior: before },
-                  afterState: { timeoutBehavior: next },
-                  details: 'Timeout behavior change'
-                });
+                try {
+                  validateTimerConfig({ durationMs: turnDuration, behavior: next });
+                  setTimeoutBehavior(next);
+                  audit.log({
+                    action: 'UPDATE',
+                    eventType: 'SETTINGS_CHANGE',
+                    beforeState: { timeoutBehavior: before },
+                    afterState: { timeoutBehavior: next },
+                    details: 'Timeout behavior change'
+                  });
+                } catch (err) {
+                  setStatusMsg(err?.message || 'Invalid timeout behavior');
+                  setStatusType('error');
+                  audit.log({
+                    action: 'UPDATE',
+                    eventType: 'settings_change_error',
+                    beforeState: { timeoutBehavior: before },
+                    afterState: { timeoutBehavior: next },
+                    details: err?.message || 'timeout behavior validation failed'
+                  });
+                }
               }}
               className="btn ghost"
               data-testid="timeout-behavior-select"
