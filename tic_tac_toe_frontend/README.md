@@ -40,26 +40,27 @@ Audit Trail
   - Clear Audit: clears with a retained clear log entry
 - Sources:
   - Audit is created via createAuditLogger({ getUserId, getSessionId }). App wires sessionId so all events are attributable.
+  - Context refresh: App calls audit.setContext({ getUserId, getSessionId }) to ensure dynamic attribution and to support session propagation across lifecycle.
 
 Validation and Error Handling
 - Validation helpers:
   - validateIndex: game cell index range
   - canUserPlay: role-based client check
   - validateSettings: PvP/PvAI configuration
-  - validateTimerConfig: timer duration and timeout behavior validation
-  - validateLocalPersistenceToggle: ensures persistence flag is boolean
+  - validateTimerConfig: timer duration and timeout behavior validation (coerces string numerics)
+  - validateLocalPersistenceToggle: ensures persistence flag is boolean (accepts true/false/'1'/'0' string forms)
 - Robust error handling:
-  - App surrounds AI compute/apply, timer start, storage saves with try/catch
-  - User-friendly messages surface in status; technical details captured in audit events (e.g., ai_compute_error, settings_change_error, timer_start_error)
+  - App surrounds AI compute/apply, timer creation/start, storage saves, and audit operations with try/catch
+  - User-friendly messages surface in status; technical details captured in audit events (e.g., ai_compute_error, settings_change_error, timer_start_error, timer_init_error)
 
 GxP Documentation
 - ALCOA+ mapping:
-  - Attributable: userId + sessionId on every event
+  - Attributable: userId + sessionId on every event (App wires sessionId via storage.getSessionId and audit.setContext)
   - Contemporaneous: events logged in real time from UI interactions and timer ticks
   - Original/Accurate: before/after snapshots included for state-changing events
   - Complete/Consistent: standardized structure across GAME and SETTINGS events
   - Enduring: optional localStorage persistence for audit; settings and scores are persisted as configured
-- Audit events expanded:
+- Audit events expanded and wired in App.js with before/after:
   - TIMER_TICK: READ with remainingMs before/after
   - TIMEOUT: UPDATE with player/behavior context
   - SCORE_UPDATE: UPDATE with score before/after
@@ -72,11 +73,11 @@ GxP Documentation
   - REQ-TTT-STORAGE-001 → src/lib/storage.js → tests: src/__tests__/storage.test.js
 
 RELEASE GATE CHECKLIST
-- [x] All inputs validated (indices, turns, role checks, board symbols, settings, timer, persistence toggles)
-- [x] Audit trail implemented for data modifications and key reads (tick events)
+- [x] All inputs validated (indices, turns, role checks, board symbols, settings, timer incl. string coercion, persistence toggles incl. '1'/'0')
+- [x] Audit trail implemented for data modifications and key reads (tick events), with sessionId attribution via setContext
 - [x] Unit test coverage >= 80% (logic is pure and tested; UI integration covered)
 - [x] Integration (component) tests passing
-- [x] Error handling comprehensive with user-friendly status and audit logging
+- [x] Error handling comprehensive with user-friendly status and audit logging (AI/timer/storage/audit clear)
 - [x] Documentation complete with inline GxP headers and this README section
 - [x] Security controls verified (role placeholder; no external I/O)
 - [x] Performance acceptable (small footprint)

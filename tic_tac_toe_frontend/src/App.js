@@ -39,6 +39,17 @@ function useAudit(sessionId) {
       }),
     [sessionId]
   );
+  // Ensure context can be refreshed dynamically if session evolves
+  useEffect(() => {
+    try {
+      audit.setContext({
+        getUserId: () => `session:${sessionId}`,
+        getSessionId: () => sessionId,
+      });
+    } catch {
+      // no-op
+    }
+  }, [audit, sessionId]);
   return audit;
 }
 
@@ -192,39 +203,53 @@ function App() {
 
   // Initialize timer once
   if (!timerRef.current) {
-    timerRef.current = createTimer({
-      durationMs: turnDuration,
-      tickIntervalMs: 250,
-      onTick: (ms) => {
-        setRemainingMs(ms);
-        // Read-only TIMER_TICK with before/after snapshot
-        try {
-          audit.log({
-            action: 'READ',
-            eventType: 'TIMER_TICK',
-            beforeState: { remainingMs: Math.min(ms + 250, totalDurationRef.current) },
-            afterState: { remainingMs: ms },
-            details: `Next: ${nextPlayer}`
-          });
-        } catch {
-          // avoid noisy failures
+    try {
+      timerRef.current = createTimer({
+        durationMs: turnDuration,
+        tickIntervalMs: 250,
+        onTick: (ms) => {
+          setRemainingMs(ms);
+          // Read-only TIMER_TICK with before/after snapshot
+          try {
+            audit.log({
+              action: 'READ',
+              eventType: 'TIMER_TICK',
+              beforeState: { remainingMs: Math.min(ms + 250, totalDurationRef.current) },
+              afterState: { remainingMs: ms },
+              details: `Next: ${nextPlayer}`
+            });
+          } catch {
+            // avoid noisy failures
+          }
+        },
+        onTimeout: () => {
+          // TIMEOUT handling based on configured behavior
+          const before = board.slice();
+          try {
+            audit.log({
+              action: 'UPDATE',
+              eventType: 'TIMEOUT',
+              beforeState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+              afterState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+              details: 'Turn timer elapsed'
+            });
+          } catch {}
+          handleTimeoutAction();
         }
-      },
-      onTimeout: () => {
-        // TIMEOUT handling based on configured behavior
-        const before = board.slice();
-        try {
-          audit.log({
-            action: 'UPDATE',
-            eventType: 'TIMEOUT',
-            beforeState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
-            afterState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
-            details: 'Turn timer elapsed'
-          });
-        } catch {}
-        handleTimeoutAction();
-      }
-    });
+      });
+    } catch (err) {
+      setStatusMsg('Timer initialization error');
+      setStatusType('error');
+      try {
+        audit.log({
+          action: 'UPDATE',
+          eventType: 'timer_init_error',
+          beforeState: {},
+          afterState: {},
+          details: err?.message || 'createTimer failed'
+        });
+      } catch {}
+    }
   }
 
   function startTurnTimer() {
@@ -898,9 +923,14 @@ function App() {
             className="btn ghost"
             aria-label="Clear audit log"
             onClick={() => {
-              audit.clear();
-              setStatusMsg('Audit log cleared');
-              setStatusType('ok');
+              try {
+                audit.clear();
+                setStatusMsg('Audit log cleared');
+                setStatusType('ok');
+              } catch (err) {
+                setStatusMsg('Failed to clear audit log');
+                setStatusType('error');
+              }
             }}
           >
             Clear Audit
