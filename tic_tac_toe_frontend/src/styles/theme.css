@@ -51,6 +51,8 @@ body {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16px;
+  gap: 12px;
+  flex-wrap: wrap; /* allow wrapping on smaller screens */
 }
 
 .title {
@@ -67,7 +69,100 @@ body {
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap; /* allow wrapping to multiple rows */
   gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
+}
+
+.toolbar > * {
+  /* Ensure consistent hit target size and spacing */
+  min-height: 44px;           /* touch target height */
+}
+
+/* Selects and buttons inside toolbar */
+.toolbar .btn,
+.toolbar select,
+.toolbar button {
+  min-height: 44px;
+  line-height: 1.2;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
+/* Checkbox groups keep readable targets */
+.audit-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+.audit-toggle label {
+  line-height: 1.2;
+}
+
+/* Responsive behavior: under 640px, stack toolbar items into two rows if needed */
+@media (max-width: 640px) {
+  .header {
+    align-items: flex-start;
+  }
+  .toolbar {
+    justify-content: flex-start;  /* start alignment prevents squeeze */
+    gap: 6px 8px;                 /* tighter vertical gap, keep horizontal comfortable */
+  }
+  .toolbar .btn,
+  .toolbar select,
+  .toolbar button {
+    padding: 10px 10px;           /* slightly tighter padding */
+    font-size: 13px;
+  }
+  .audit-toggle {
+    font-size: 12px;
+  }
+}
+
+/* Ultra-compact mode: under 400px, force items to occupy available width more predictably */
+@media (max-width: 400px) {
+  .title {
+    font-size: 20px;
+  }
+  .toolbar {
+    gap: 6px;
+  }
+  .toolbar select {
+    flex: 1 1 140px;       /* let selects grow/shrink and wrap nicely */
+    min-width: 120px;
+  }
+  .toolbar .btn.secondary,
+  .toolbar .btn {
+    flex: 0 0 auto;
+  }
+}
+
+/* Prevent header/toolbar from overlapping content; ensure card shrinks gracefully */
+.card {
+  width: 100%;
+  max-width: 560px;
+  background: var(--color-surface);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 24px;
+}
+
+/* Ensure the board remains centered and visible even when toolbar wraps */
+.board {
+  margin: 12px auto 18px;
+}
+
+/* Smaller devices: scale down cells slightly earlier to accommodate wrapped controls */
+@media (max-width: 520px) {
+  :root {
+    --cell-size: 90px;
+  }
+}
+@media (max-width: 420px) {
+  :root {
+    --cell-size: 84px;
+  }
 }
 
 .btn {

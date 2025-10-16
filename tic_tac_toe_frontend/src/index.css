@@ -10,3 +10,14 @@
   clip: rect(1px, 1px, 1px, 1px);
   white-space: nowrap;
 }
+
+/* Improve focus visibility for keyboard users globally */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Ensure the app-shell does not cause horizontal overflow when toolbar wraps */
+html, body {
+  overflow-x: hidden;
+}

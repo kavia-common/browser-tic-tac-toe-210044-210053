@@ -630,7 +630,7 @@ function App() {
             <h1 className="title">Tic Tac Toe</h1>
             <p className="subtitle">Ocean Professional Theme</p>
           </div>
-          <div className="toolbar" role="toolbar" aria-label="Game controls">
+          <div className="toolbar" role="toolbar" aria-label="Game controls" data-testid="top-toolbar">
             <div className="audit-toggle">
               <input
                 id="persist-audit"
