@@ -19,6 +19,7 @@ Validation Protocol: VP-TTT-TEST-APP-001
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from './App';
+import { loadScores } from './lib/storage';
 
 jest.useFakeTimers();
 
@@ -209,4 +210,38 @@ test('Timeout behavior: auto-random-move fills a cell automatically', () => {
   // After timeout, one cell should be filled
   const filled = Array.from({ length: 9 }, (_, i) => screen.getByTestId(`cell-${i}`)).filter((c) => c.textContent !== '');
   expect(filled.length).toBeGreaterThanOrEqual(1);
+});
+
+test('Persist scores toggle controls localStorage saving', () => {
+  render(<App />);
+  // Ensure default enabled
+  const toggle = screen.getByTestId('persist-scores-toggle');
+  expect(toggle).toBeChecked();
+
+  // Make X win quickly
+  fireEvent.click(screen.getByTestId('cell-0'));
+  fireEvent.click(screen.getByTestId('cell-3'));
+  fireEvent.click(screen.getByTestId('cell-1'));
+  fireEvent.click(screen.getByTestId('cell-4'));
+  fireEvent.click(screen.getByTestId('cell-2')); // X wins
+  // Scores should be saved
+  const raw = window.localStorage.getItem('ttt_scores');
+  expect(raw).toBeTruthy();
+
+  // Disable persistence clears storage
+  fireEvent.click(toggle);
+  expect(toggle).not.toBeChecked();
+  expect(window.localStorage.getItem('ttt_scores')).toBeNull();
+
+  // Re-enable saves again
+  fireEvent.click(toggle);
+  expect(window.localStorage.getItem('ttt_scores')).toBeTruthy();
+});
+
+test('Scoreboard shows VS AI context when in PvAI', () => {
+  render(<App />);
+  const modeSelect = screen.getByTestId('mode-select');
+  fireEvent.change(modeSelect, { target: { value: 'PvAI' } });
+  const scoreboard = screen.getByRole('region', { name: /scoreboard/i });
+  expect(scoreboard.textContent).toMatch(/VS AI/i);
 });

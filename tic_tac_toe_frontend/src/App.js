@@ -26,10 +26,18 @@ import { createAuditLogger } from './lib/audit';
 import { validateIndex, canUserPlay, validateSettings } from './lib/validation';
 import { computeAiMove } from './lib/ai';
 import { createTimer } from './lib/timer';
+import { getSessionId, loadScores, saveScores, clearScores, loadSettings, saveSettings } from './lib/storage';
 
-function useAudit() {
-  // Create once
-  const audit = useMemo(() => createAuditLogger({ persist: false }), []);
+function useAudit(sessionId) {
+  // Create once with userId derived from session
+  const audit = useMemo(
+    () =>
+      createAuditLogger({
+        persist: false,
+        getUserId: () => `session:${sessionId}`,
+      }),
+    [sessionId]
+  );
   return audit;
 }
 
@@ -40,11 +48,13 @@ function App() {
 
   // Game state
   const [board, setBoard] = useState(Array(9).fill(''));
-  const [score, setScore] = useState({ X: 0, O: 0 });
+  const [score, setScore] = useState(() => loadScores());
   const [statusMsg, setStatusMsg] = useState('Welcome! X to move.');
   const [statusType, setStatusType] = useState('ok'); // ok | error
   const [persistAudit, setPersistAudit] = useState(false);
-  const audit = useAudit();
+  const [persistScores, setPersistScores] = useState(true);
+  const sessionId = useMemo(() => getSessionId(), []);
+  const audit = useAudit(sessionId);
 
   // Settings state for PvP / PvAI
   const [mode, setMode] = useState('PvP'); // 'PvP' | 'PvAI'
@@ -55,6 +65,32 @@ function App() {
   // Timer settings
   const [turnDuration, setTurnDuration] = useState(10000); // 10/20/30s
   const [timeoutBehavior, setTimeoutBehavior] = useState('skip-turn'); // 'auto-random-move' | 'skip-turn' | 'forfeit-round'
+
+  // Load saved settings once
+  useEffect(() => {
+    const saved = loadSettings();
+    if (saved && typeof saved === 'object') {
+      try {
+        if (saved.mode) setMode(saved.mode);
+        if (saved.difficulty) setDifficulty(saved.difficulty);
+        if (saved.aiSymbol) setAiSymbol(saved.aiSymbol);
+        if (saved.starting) setStarting(saved.starting);
+        if (Number.isFinite(saved.turnDuration)) setTurnDuration(saved.turnDuration);
+        if (saved.timeoutBehavior) setTimeoutBehavior(saved.timeoutBehavior);
+        if (typeof saved.persistScores === 'boolean') setPersistScores(saved.persistScores);
+        audit.log({
+          action: 'READ',
+          eventType: 'settings_load',
+          beforeState: {},
+          afterState: saved,
+          details: 'Loaded settings from localStorage',
+        });
+      } catch {
+        // ignore invalid saved settings
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const timerRef = useRef(null);
   const totalDurationRef = useRef(turnDuration);
   const [remainingMs, setRemainingMs] = useState(turnDuration);
@@ -66,6 +102,12 @@ function App() {
     audit.setPersistence(persistAudit);
   }, [persistAudit, audit]);
 
+  // Persist selected settings for continuity
+  useEffect(() => {
+    const settings = { mode, difficulty, aiSymbol, starting, turnDuration, timeoutBehavior, persistScores };
+    saveSettings(settings);
+  }, [mode, difficulty, aiSymbol, starting, turnDuration, timeoutBehavior, persistScores]);
+
   const gameOver = (() => {
     const w = checkWinner(board);
     if (w.winner) return true;
@@ -73,6 +115,31 @@ function App() {
   })();
 
   const nextPlayer = getNextPlayer(board);
+
+  // Persist scores based on toggle
+  useEffect(() => {
+    if (persistScores) {
+      saveScores(score);
+    }
+  }, [score, persistScores]);
+
+  // On toggle change, if disabled, clear persisted scores
+  useEffect(() => {
+    if (!persistScores) {
+      clearScores();
+    } else {
+      // when enabling, immediately save current in-memory score
+      saveScores(score);
+    }
+    audit.log({
+      action: 'UPDATE',
+      eventType: 'settings_change',
+      beforeState: { setting: 'persistScores' },
+      afterState: { persistScores },
+      details: 'Persist scores toggle changed',
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [persistScores]);
 
   // Initialize timer once
   if (!timerRef.current) {
@@ -154,7 +221,17 @@ function App() {
       const opponent = current === 'X' ? 'O' : 'X';
       setStatusMsg(`${current} forfeited - ${opponent} wins`);
       setStatusType('ok');
-      setScore((s) => ({ ...s, [opponent]: s[opponent] + 1 }));
+      setScore((s) => {
+        const next = { ...s, [opponent]: s[opponent] + 1 };
+        audit.log({
+          action: 'UPDATE',
+          eventType: 'SCORE_UPDATE',
+          beforeState: s,
+          afterState: next,
+          details: `Forfeit - ${opponent} awarded`,
+        });
+        return next;
+      });
       stopTurnTimer();
       return;
     }
@@ -223,7 +300,17 @@ function App() {
       setLiveMsg(`AI played ${currentPlayer} at cell ${idx + 1}`);
       const result = checkWinner(newBoard);
       if (result.winner) {
-        setScore((s) => ({ ...s, [result.winner]: s[result.winner] + 1 }));
+        setScore((s) => {
+          const next = { ...s, [result.winner]: s[result.winner] + 1 };
+          audit.log({
+            action: 'UPDATE',
+            eventType: 'SCORE_UPDATE',
+            beforeState: s,
+            afterState: next,
+            details: `Increment ${result.winner} (AI)`,
+          });
+          return next;
+        });
         audit.log({
           action: 'UPDATE',
           eventType: 'game_win',
@@ -354,7 +441,17 @@ function App() {
 
       const { winner } = checkWinner(newBoard);
       if (winner) {
-        setScore((s) => ({ ...s, [winner]: s[winner] + 1 }));
+        setScore((s) => {
+          const next = { ...s, [winner]: s[winner] + 1 };
+          audit.log({
+            action: 'UPDATE',
+            eventType: 'SCORE_UPDATE',
+            beforeState: s,
+            afterState: next,
+            details: `Increment ${winner}`,
+          });
+          return next;
+        });
         audit.log({
           action: 'UPDATE',
           eventType: 'game_win',
@@ -456,6 +553,19 @@ function App() {
               />
               <label htmlFor="persist-audit" title="Persist audit log in localStorage">
                 Persist audit
+              </label>
+            </div>
+
+            <div className="audit-toggle">
+              <input
+                id="persist-scores"
+                type="checkbox"
+                checked={persistScores}
+                onChange={(e) => setPersistScores(e.target.checked)}
+                data-testid="persist-scores-toggle"
+              />
+              <label htmlFor="persist-scores" title="Persist scores in localStorage">
+                Persist scores
               </label>
             </div>
 
@@ -653,7 +763,7 @@ function App() {
           {statusMsg}
         </div>
 
-        <Scoreboard scoreX={score.X} scoreO={score.O} />
+        <Scoreboard scoreX={score.X} scoreO={score.O} mode={mode} aiSymbol={aiSymbol} />
 
         {/* Timer progress bar */}
         <div className="timer-wrap" role="group" aria-label="Turn timer">

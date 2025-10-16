@@ -25,11 +25,25 @@ import React from 'react';
  *  - scoreO: number
  * Returns: JSX.Element
  */
-export default function Scoreboard({ scoreX, scoreO }) {
+export default function Scoreboard({ scoreX, scoreO, mode = 'PvP', aiSymbol = 'O' }) {
+  /**
+   * Extend scoreboard to display mode context:
+   *  - PvP: Show X/O scores.
+   *  - PvAI: Show "You vs AI" perspective (assumes human is the opposite of aiSymbol
+   *    at any given time; over many rounds human may be X or O. We still show X/O but
+   *    add a small context note).
+   */
+  const context =
+    mode === 'PvAI'
+      ? `VS AI (${aiSymbol})`
+      : 'PvP';
   return (
     <div className="scoreboard" role="region" aria-label="Scoreboard">
       <div className="score" aria-label={`X score ${scoreX}`}>X: {scoreX}</div>
       <div className="score" aria-label={`O score ${scoreO}`}>O: {scoreO}</div>
+      <div className="score" aria-label="mode context" style={{ fontWeight: 600, fontSize: 12 }}>
+        {context}
+      </div>
     </div>
   );
 }
