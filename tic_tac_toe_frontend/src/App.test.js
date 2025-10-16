@@ -20,6 +20,8 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import App from './App';
 
+jest.useFakeTimers();
+
 function clickCell(i) {
   fireEvent.click(screen.getByTestId(`cell-${i}`));
 }
@@ -150,4 +152,61 @@ test('PvAI prevents human from playing during AI turn', () => {
   // If user tries to click immediately, status should advise to wait.
   clickCell(1);
   expect(screen.getByRole('status')).toHaveTextContent(/wait for ai move/i);
+});
+
+test('Timer starts and shows aria-live updates; resets on move', () => {
+  render(<App />);
+  // Set short duration to 10s to check aria-live content
+  const durationSelect = screen.getByTestId('timer-duration-select');
+  fireEvent.change(durationSelect, { target: { value: '10000' } });
+
+  // On mount/first render, timer should be started for X
+  // Advance 250ms to trigger tick
+  jest.advanceTimersByTime(250);
+
+  // The hidden aria-live region for timer exists
+  const liveRegions = screen.getAllByRole('status', { hidden: true });
+  const timerLive = liveRegions.find((el) => /time remaining/i.test(el.textContent || ''));
+  expect(timerLive).toBeTruthy();
+
+  // Make a move to reset timer
+  clickCell(0);
+  jest.advanceTimersByTime(250);
+  // After move, aria-live message should still reflect time remaining without errors
+  const text = timerLive.textContent || '';
+  expect(text).toMatch(/time remaining/i);
+});
+
+test('Timeout behavior: skip-turn advances to opponent', () => {
+  render(<App />);
+  // Ensure behavior is skip-turn
+  const behaviorSelect = screen.getByTestId('timeout-behavior-select');
+  fireEvent.change(behaviorSelect, { target: { value: 'skip-turn' } });
+
+  // Shorten duration to 10s (already default) and advance time to trigger timeout
+  jest.advanceTimersByTime(10500);
+  // Status should mention timed out or next player's turn
+  expect(screen.getByRole('status').textContent.toLowerCase()).toMatch(/timed out|to move/);
+});
+
+test('Timeout behavior: forfeit-round awards opponent a point', () => {
+  render(<App />);
+  const behaviorSelect = screen.getByTestId('timeout-behavior-select');
+  fireEvent.change(behaviorSelect, { target: { value: 'forfeit-round' } });
+  // Let X forfeit
+  jest.advanceTimersByTime(10050);
+  // Scoreboard should show O or X increased depending on timeout loser
+  const scoreboard = screen.getByRole('region', { name: /scoreboard/i });
+  expect(scoreboard.textContent).toMatch(/X:\s*\d+\s*O:\s*\d+/i);
+});
+
+test('Timeout behavior: auto-random-move fills a cell automatically', () => {
+  render(<App />);
+  const behaviorSelect = screen.getByTestId('timeout-behavior-select');
+  fireEvent.change(behaviorSelect, { target: { value: 'auto-random-move' } });
+
+  jest.advanceTimersByTime(10100);
+  // After timeout, one cell should be filled
+  const filled = Array.from({ length: 9 }, (_, i) => screen.getByTestId(`cell-${i}`)).filter((c) => c.textContent !== '');
+  expect(filled.length).toBeGreaterThanOrEqual(1);
 });

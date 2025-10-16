@@ -16,7 +16,7 @@ Risk Level: LOW
 Validation Protocol: VP-TTT-APP-001
 ============================================================================
 */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import './index.css';
 import './App.css';
 import Board from './components/Board';
@@ -25,6 +25,7 @@ import { checkWinner, isDraw, getNextPlayer, applyMove } from './lib/gameLogic';
 import { createAuditLogger } from './lib/audit';
 import { validateIndex, canUserPlay, validateSettings } from './lib/validation';
 import { computeAiMove } from './lib/ai';
+import { createTimer } from './lib/timer';
 
 function useAudit() {
   // Create once
@@ -51,7 +52,14 @@ function App() {
   const [aiSymbol, setAiSymbol] = useState('O'); // AI's symbol
   const [starting, setStarting] = useState('human'); // 'human' | 'ai'
 
-  // announce area for AI moves
+  // Timer settings
+  const [turnDuration, setTurnDuration] = useState(10000); // 10/20/30s
+  const [timeoutBehavior, setTimeoutBehavior] = useState('skip-turn'); // 'auto-random-move' | 'skip-turn' | 'forfeit-round'
+  const timerRef = useRef(null);
+  const totalDurationRef = useRef(turnDuration);
+  const [remainingMs, setRemainingMs] = useState(turnDuration);
+
+  // announce area for AI moves and timer
   const [liveMsg, setLiveMsg] = useState('');
 
   useEffect(() => {
@@ -65,6 +73,119 @@ function App() {
   })();
 
   const nextPlayer = getNextPlayer(board);
+
+  // Initialize timer once
+  if (!timerRef.current) {
+    timerRef.current = createTimer({
+      durationMs: turnDuration,
+      tickIntervalMs: 250,
+      onTick: (ms) => {
+        setRemainingMs(ms);
+        // Audit TIMER_TICK as GAME_EVENT, keep frequency manageable (every 1s)
+        // We log on each onTick; consumers can throttle if needed. Keep small payload.
+        audit.log({
+          action: 'READ',
+          eventType: 'TIMER_TICK',
+          beforeState: { remainingMs: ms + 250 }, // approximate previous
+          afterState: { remainingMs: ms },
+          details: `Next: ${nextPlayer}`
+        });
+      },
+      onTimeout: () => {
+        // TIMEOUT handling based on configured behavior
+        const before = board.slice();
+        audit.log({
+          action: 'UPDATE',
+          eventType: 'TIMEOUT',
+          beforeState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+          afterState: { board: before, player: nextPlayer, behavior: timeoutBehavior },
+          details: 'Turn timer elapsed'
+        });
+        handleTimeoutAction();
+      }
+    });
+  }
+
+  function startTurnTimer() {
+    totalDurationRef.current = turnDuration;
+    try {
+      timerRef.current.start(turnDuration);
+      setRemainingMs(turnDuration);
+      setLiveMsg(`Timer started: ${Math.ceil(turnDuration / 1000)} seconds`);
+    } catch (e) {
+      // Shouldn't happen with validated durations, but avoid crashing
+      setStatusMsg('Timer error');
+      setStatusType('error');
+    }
+  }
+
+  function stopTurnTimer() {
+    if (timerRef.current) {
+      timerRef.current.stop();
+      setRemainingMs(totalDurationRef.current);
+    }
+  }
+
+  function resetTurnTimer() {
+    stopTurnTimer();
+    startTurnTimer();
+  }
+
+  function handleTimeoutAction() {
+    // If game already over, do nothing
+    const { winner } = checkWinner(board);
+    if (winner || isDraw(board)) {
+      stopTurnTimer();
+      return;
+    }
+
+    const current = nextPlayer; // player who timed out
+    if (timeoutBehavior === 'skip-turn') {
+      // Skip: no board change, just pass to other player by setting a no-op and letting effect update status
+      setStatusMsg(`${current} timed out - turn skipped`);
+      setStatusType('error');
+      // Force timer restart for next player by invoking resetTurnTimer after state stabilizes
+      setTimeout(() => resetTurnTimer(), 0);
+      return;
+    }
+
+    if (timeoutBehavior === 'forfeit-round') {
+      // Opponent gets the win immediately
+      const opponent = current === 'X' ? 'O' : 'X';
+      setStatusMsg(`${current} forfeited - ${opponent} wins`);
+      setStatusType('ok');
+      setScore((s) => ({ ...s, [opponent]: s[opponent] + 1 }));
+      stopTurnTimer();
+      return;
+    }
+
+    if (timeoutBehavior === 'auto-random-move') {
+      // Auto-play a random legal move for the current player
+      const empties = board.map((v, i) => (v ? null : i)).filter((v) => v !== null);
+      if (empties.length === 0) {
+        stopTurnTimer();
+        return;
+      }
+      const idx = empties[Math.floor(Math.random() * empties.length)];
+      try {
+        const before = board.slice();
+        const newBoard = applyMove(board, idx, current);
+        setBoard(newBoard);
+        // After a move, timer restarts for next player
+        setTimeout(() => resetTurnTimer(), 0);
+        audit.log({
+          action: 'UPDATE',
+          eventType: 'cell_click',
+          beforeState: before,
+          afterState: newBoard,
+          details: `Auto move due to timeout at ${idx}`
+        });
+      } catch (err) {
+        setStatusMsg('Auto-move failed');
+        setStatusType('error');
+      }
+    }
+  }
 
   // Orchestrate AI move when applicable
   useEffect(() => {
@@ -110,6 +231,7 @@ function App() {
           afterState: newBoard,
           details: `Winner: ${result.winner} (AI move)`
         });
+        stopTurnTimer();
       } else if (isDraw(newBoard)) {
         audit.log({
           action: 'UPDATE',
@@ -117,6 +239,7 @@ function App() {
           beforeState: before,
           afterState: newBoard
         });
+        stopTurnTimer();
       } else {
         audit.log({
           action: 'UPDATE',
@@ -125,6 +248,8 @@ function App() {
           afterState: newBoard,
           details: `AI move at ${idx}`
         });
+        // After AI move, timer resets for human turn
+        resetTurnTimer();
       }
     } catch (err) {
       const message = err && err.message ? err.message : 'AI move apply failed';
@@ -166,13 +291,18 @@ function App() {
     if (winner) {
       setStatusMsg(`Winner: ${winner}`);
       setStatusType('ok');
+      stopTurnTimer();
     } else if (isDraw(board)) {
       setStatusMsg('Draw!');
       setStatusType('ok');
+      stopTurnTimer();
     } else {
       setStatusMsg(`${nextPlayer} to move.`);
       setStatusType('ok');
+      // Start/restart timer at each new turn
+      resetTurnTimer();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [board, nextPlayer]);
 
   function toastError(message) {
@@ -220,6 +350,7 @@ function App() {
 
       const newBoard = applyMove(board, index, currentPlayer);
       setBoard(newBoard);
+      // Successful move: timer will reset on turn change effect
 
       const { winner } = checkWinner(newBoard);
       if (winner) {
@@ -273,6 +404,9 @@ function App() {
     setBoard(after);
     setStatusType('ok');
     setStatusMsg('Game reset. X to move.');
+    // Reset timer for a new round
+    stopTurnTimer();
+    setTimeout(() => resetTurnTimer(), 0);
     audit.log({
       action: 'UPDATE',
       eventType: 'game_reset',
@@ -294,6 +428,8 @@ function App() {
     setScore({ X: 0, O: 0 });
     setStatusType('ok');
     setStatusMsg('All reset. X to move.');
+    stopTurnTimer();
+    setTimeout(() => resetTurnTimer(), 0);
     audit.log({
       action: 'UPDATE',
       eventType: 'game_reset_all',
@@ -441,6 +577,60 @@ function App() {
             )}
 
             <select
+              aria-label="Turn timer duration"
+              value={String(turnDuration)}
+              onChange={(e) => {
+                const dur = parseInt(e.target.value, 10);
+                const before = turnDuration;
+                setTurnDuration(dur);
+                totalDurationRef.current = dur;
+                // Restart timer with new duration if game not over
+                const { winner } = checkWinner(board);
+                if (!winner && !isDraw(board)) {
+                  resetTurnTimer();
+                }
+                audit.log({
+                  action: 'UPDATE',
+                  eventType: 'settings_change',
+                  beforeState: { turnDuration: before },
+                  afterState: { turnDuration: dur },
+                  details: 'Timer duration change'
+                });
+              }}
+              className="btn ghost"
+              data-testid="timer-duration-select"
+              title="Turn timer duration"
+            >
+              <option value="10000">10s</option>
+              <option value="20000">20s</option>
+              <option value="30000">30s</option>
+            </select>
+
+            <select
+              aria-label="Timeout behavior"
+              value={timeoutBehavior}
+              onChange={(e) => {
+                const before = timeoutBehavior;
+                const next = e.target.value;
+                setTimeoutBehavior(next);
+                audit.log({
+                  action: 'UPDATE',
+                  eventType: 'settings_change',
+                  beforeState: { timeoutBehavior: before },
+                  afterState: { timeoutBehavior: next },
+                  details: 'Timeout behavior change'
+                });
+              }}
+              className="btn ghost"
+              data-testid="timeout-behavior-select"
+              title="Action when time runs out"
+            >
+              <option value="auto-random-move">Auto random move</option>
+              <option value="skip-turn">Skip turn</option>
+              <option value="forfeit-round">Forfeit round</option>
+            </select>
+
+            <select
               aria-label="Role selector"
               value={role}
               onChange={(e) => setRole(e.target.value)}
@@ -464,6 +654,34 @@ function App() {
         </div>
 
         <Scoreboard scoreX={score.X} scoreO={score.O} />
+
+        {/* Timer progress bar */}
+        <div className="timer-wrap" role="group" aria-label="Turn timer">
+          <div
+            className={`timer-bar ${remainingMs / (totalDurationRef.current || 1) <= 0.25 ? 'warn' : ''}`}
+            style={{
+              width: '100%',
+              height: '10px',
+              background: '#e5e7eb',
+              borderRadius: '6px',
+              overflow: 'hidden'
+            }}
+          >
+            <div
+              className="timer-fill"
+              style={{
+                width: `${Math.max(0, Math.min(100, (remainingMs / (totalDurationRef.current || 1)) * 100))}%`,
+                height: '100%',
+                background: 'var(--color-success)',
+                transition: 'width .25s linear'
+              }}
+              aria-hidden="true"
+            />
+          </div>
+          <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
+            {`Time remaining: ${Math.ceil(remainingMs / 1000)} seconds`}
+          </div>
+        </div>
 
         <Board
           board={board}

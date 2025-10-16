@@ -186,6 +186,18 @@ body {
   font-weight: 700;
 }
 
+/* Timer styles */
+.timer-wrap {
+  margin: 8px 0 6px 0;
+}
+.timer-bar .timer-fill {
+  background: var(--color-success);
+}
+.timer-bar.warn .timer-fill,
+.timer-bar .timer-fill.warn {
+  background: var(--color-error);
+}
+
 .kbd {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   border: 1px solid #e2e8f0;
