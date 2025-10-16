@@ -115,3 +115,39 @@ test('access control: observer cannot play', () => {
   clickCell(0);
   expect(screen.getByRole('status')).toHaveTextContent(/only players can make moves/i);
 });
+
+test('PvAI mode: user can select difficulty and AI makes a move', async () => {
+  render(<App />);
+  // Switch to PvAI
+  const modeSelect = screen.getByTestId('mode-select');
+  fireEvent.change(modeSelect, { target: { value: 'PvAI' } });
+
+  // Select hard AI O (default starting human)
+  const diffSelect = screen.getByTestId('difficulty-select');
+  fireEvent.change(diffSelect, { target: { value: 'hard' } });
+
+  const aiSymbolSelect = screen.getByTestId('ai-symbol-select');
+  fireEvent.change(aiSymbolSelect, { target: { value: 'O' } });
+
+  // Human plays as X, then AI should respond
+  clickCell(0); // X
+  // After this, one more cell should be filled by AI (board should have 2 filled cells)
+  const filled = Array.from({ length: 9 }, (_, i) => screen.getByTestId(`cell-${i}`))
+    .filter((c) => c.textContent !== '');
+  expect(filled.length).toBeGreaterThanOrEqual(2);
+});
+
+test('PvAI prevents human from playing during AI turn', () => {
+  render(<App />);
+  const modeSelect = screen.getByTestId('mode-select');
+  fireEvent.change(modeSelect, { target: { value: 'PvAI' } });
+  const aiSymbolSelect = screen.getByTestId('ai-symbol-select');
+  fireEvent.change(aiSymbolSelect, { target: { value: 'X' } });
+  const startingSelect = screen.getByTestId('starting-select');
+  fireEvent.change(startingSelect, { target: { value: 'ai' } });
+
+  // On empty board, it's X to move; AI is X and should move.
+  // If user tries to click immediately, status should advise to wait.
+  clickCell(1);
+  expect(screen.getByRole('status')).toHaveTextContent(/wait for ai move/i);
+});
